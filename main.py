@@ -16,13 +16,34 @@ from models.face_recognition import FaceRecognitionVerifier
 from models.head_pose import HeadPoseDetector
 from models.eye_gaze import EyeGazeDetector
 from models.tab_monitor import BrowserTabMonitor
+from models.hotkey_monitor import HotkeyMonitor
 from utils.snapshot import save_snapshot
-from models.hotkey_monitor import HotkeyMonitor  # Added import
+from voice_auth import enroll_voice, authenticate, load_enrollment
 
+# Global voice status
+voice_result = "Pending"
+
+# Snapshot capture loop
 def snapshot_loop():
     while True:
         save_snapshot()
         time.sleep(120)
+
+# Voice authentication background loop
+def voice_auth_loop():
+    global voice_result
+    enrolled_embedding = load_enrollment()
+    if enrolled_embedding is None:
+        print("[WARNING] No voice enrolled.")
+        voice_result = "Not Enrolled"
+        return
+
+    while True:
+        wait_time = random.randint(30, 90)
+        time.sleep(wait_time)
+        print("Performing random voice check...")
+        result = authenticate(enrolled_embedding)
+        voice_result = "Verified" if result else "Different"
 
 class InterviewMonitor:
     def __init__(self):
@@ -31,25 +52,20 @@ class InterviewMonitor:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.running = True
         self.reference_face = None
-        self.alert_cooldown = time.time()
 
         self.face_detector = FaceCountDetector()
         self.face_verifier = FaceRecognitionVerifier()
         self.head_pose_detector = HeadPoseDetector()
         self.eye_gaze_detector = EyeGazeDetector()
         self.tab_monitor = BrowserTabMonitor()
-        self.hotkey_monitor = HotkeyMonitor()  # Added hotkey monitor
-        
-        # Start hotkey monitoring thread
-        self.start_hotkey_monitoring()  # Added method call
+        self.hotkey_monitor = HotkeyMonitor()
 
-        # Set expected tab ID
+        self.start_hotkey_monitoring()
         self.tab_monitor.set_interview_tab_id("INTERVIEW_TAB_ID")
 
-    # Added hotkey monitoring method
     def start_hotkey_monitoring(self):
         hotkey_thread = threading.Thread(
-            target=self.hotkey_monitor.start_monitoring, 
+            target=self.hotkey_monitor.start_monitoring,
             daemon=True
         )
         hotkey_thread.start()
@@ -70,10 +86,14 @@ class InterviewMonitor:
                 face_count, _ = self.face_detector.detect(frame)
                 if face_count == 1:
                     self.reference_face = self.face_verifier.extract_features(frame)
-                    cv2.destroyAllWindows()
-                    return True
+                    if self.reference_face is not None:
+                        print("Reference face captured successfully.")
+                        cv2.destroyAllWindows()
+                        return True
+                    else:
+                        print("Failed to extract facial features.")
                 else:
-                    print("Error: Ensure exactly one face is visible")
+                    print("Error: Ensure exactly one face is visible.")
             elif key == 27:
                 self.running = False
         return False
@@ -98,7 +118,7 @@ class InterviewMonitor:
 
             if self.reference_face is not None:
                 verification_result = self.face_verifier.verify(frame, self.reference_face)
-                results['verified'] = self.nuclear_bool_conversion(verification_result)
+                results['verified'] = verification_result
 
             results['head_normal'] = self.nuclear_bool_conversion(
                 self.head_pose_detector.detect(frame)
@@ -107,7 +127,6 @@ class InterviewMonitor:
                 self.eye_gaze_detector.detect(frame)
             )
 
-            # Simulate tab switch (test only)
             if random.random() < 0.02:
                 self.tab_monitor.record_tab_change("OTHER_TAB_ID")
             else:
@@ -138,11 +157,12 @@ class InterviewMonitor:
                     f"Identity: {'Verified' if results['verified'] else 'Unknown'}",
                     f"Head: {'Normal' if results['head_normal'] else 'Abnormal'}",
                     f"Gaze: {'Normal' if results['gaze_normal'] else 'Abnormal'}",
-                    f"Tabs: {'Suspicious' if results['tab_suspicious'] else 'Clean'}"
+                    f"Tabs: {'Suspicious' if results['tab_suspicious'] else 'Clean'}",
+                    f"Voice Match: {voice_result}"
                 ]
 
                 for i, text in enumerate(status_text):
-                    color = (0, 255, 0) if "Verified" in text or "Normal" in text or "Clean" in text else (0, 0, 255)
+                    color = (0, 255, 0) if "Verified" in text or "Normal" in text or "Clean" in text or "Enrolled" in text else (0, 0, 255)
                     cv2.putText(frame, text, (10, 30 + i * 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
@@ -151,12 +171,33 @@ class InterviewMonitor:
                     break
 
         finally:
-            self.hotkey_monitor.stop()  # Added cleanup
+            self.hotkey_monitor.stop()
             self.cap.release()
             cv2.destroyAllWindows()
             print("System shutdown complete")
 
 if __name__ == "__main__":
     threading.Thread(target=snapshot_loop, daemon=True).start()
+
+    # Show a window so OpenCV can receive the 'v' keypress
+    print("Press 'V' to enroll your voice (5 sec recording)")
+    blank = np.zeros((200, 600, 3), dtype=np.uint8)
+    cv2.putText(blank, "Press 'V' to enroll your voice", (20, 100),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+    while True:
+        cv2.imshow("Voice Enrollment", blank)
+        if cv2.waitKey(1) & 0xFF == ord('v'):
+            enroll_voice()
+            print("Voice enrollment completed.")
+            break
+        elif cv2.waitKey(1) & 0xFF == 27:
+            cv2.destroyAllWindows()
+            exit()
+
+    cv2.destroyAllWindows()  # Close the "Voice Enrollment" window
+
+    threading.Thread(target=voice_auth_loop, daemon=True).start()
+
     monitor = InterviewMonitor()
     monitor.run()

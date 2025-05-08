@@ -14,7 +14,7 @@ class HotkeyMonitor:
         
     def handle_cheat_attempt(self):
         raise_alert("Cheat attempt detected! Blocked restricted hotkey")
-        return False  # Blocks the original key combination
+        return False  
 
     def start_monitoring(self):
         for hotkey, callback in self.blocked_keys.items():
